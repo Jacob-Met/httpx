@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from http.cookiejar import Cookie, CookieJar
 
 import pytest
@@ -182,3 +183,55 @@ def test_cookie_persistence() -> None:
     response = client.get("http://example.org/echo_cookies")
     assert response.status_code == 200
     assert response.json() == {"cookies": "example-name=example-value"}
+
+
+def test_client_build_request_reuses_cookie_jar_without_copying() -> None:
+    # The underlying CookieJar expires cookies once during header preparation,
+    # but the client must not iterate and copy its entire jar beforehand.
+    class CountingJar(CookieJar):
+        def __init__(self) -> None:
+            super().__init__()
+            self.traversals = 0
+
+        def __iter__(self) -> Iterator[Cookie]:
+            self.traversals += 1
+            return super().__iter__()
+
+    client = httpx.Client(cookies={"session": "before"})
+    counting = CountingJar()
+    for cookie in client.cookies.jar:
+        counting.set_cookie(cookie)
+    client.cookies.jar = counting
+
+    first = client.build_request("GET", "https://example.org/path")
+    assert first.headers["cookie"] == "session=before"
+    assert counting.traversals <= 1
+
+    client.cookies.set("session", "after")
+    traversals_before = counting.traversals
+    second = client.build_request("GET", "https://example.org/path")
+    assert second.headers["cookie"] == "session=after"
+    assert first.headers["cookie"] == "session=before"
+    assert counting.traversals - traversals_before <= 1
+
+    # An empty client jar must retain the zero-cookie fast path.
+    client.cookies.clear()
+    traversals_before = counting.traversals
+    assert "cookie" not in client.build_request("GET", "https://example.org/").headers
+    assert counting.traversals == traversals_before
+
+
+def test_per_request_cookies_override_without_persisting() -> None:
+    client = httpx.Client(cookies={"session": "client", "other": "retained"})
+    request = client.build_request(
+        "GET",
+        "https://example.org/",
+        cookies={"session": "request", "new": "only-once"},
+    )
+    assert set(request.headers["cookie"].split("; ")) == {
+        "session=request",
+        "other=retained",
+        "new=only-once",
+    }
+    assert client.cookies["session"] == "client"
+    assert "new" not in client.cookies

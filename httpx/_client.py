@@ -449,8 +449,8 @@ class BaseClient:
         to create the cookies used for the outgoing request.
         """
         if not cookies:
-            # Request copies the jar when setting its Cookie header, so avoid
-            # copying the whole client jar a second time for ordinary requests.
+            # Request can prepare the Cookie header directly from the shared
+            # client jar, so ordinary requests need no whole-jar copy.
             return self.cookies
         if not self.cookies:
             return cookies

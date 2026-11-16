@@ -421,7 +421,12 @@ class Request:
         self.headers = Headers(headers)
         self.extensions = {} if extensions is None else dict(extensions)
 
-        if cookies:
+        if isinstance(cookies, Cookies):
+            # Checking the underlying domain map avoids iterating the entire
+            # jar just to skip header preparation for an empty client jar.
+            if cookies.jar._cookies:  # type: ignore[attr-defined]
+                cookies.set_cookie_header(self)
+        elif cookies:
             Cookies(cookies).set_cookie_header(self)
 
         if stream is None:
