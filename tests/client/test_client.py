@@ -201,6 +201,41 @@ def test_merge_relative_url():
     assert request.url == "https://www.example.com/testing/123"
 
 
+@pytest.mark.parametrize("client_cls", [httpx.Client, httpx.AsyncClient])
+@pytest.mark.parametrize(
+    ("relative_url", "expected"),
+    [
+        ("", "https://www.example.com/api/?token=abc"),
+        ("sub", "https://www.example.com/api/sub?token=abc"),
+        ("?token=other", "https://www.example.com/api/?token=other"),
+        ("sub?token=other", "https://www.example.com/api/sub?token=other"),
+        ("/encoded%2Fslash", "https://www.example.com/api/encoded%2Fslash?token=abc"),
+    ],
+)
+def test_merge_relative_url_with_base_query(client_cls, relative_url, expected):
+    client = client_cls(base_url="https://www.example.com/api?token=abc")
+    assert client.base_url == "https://www.example.com/api/?token=abc"
+    assert client.build_request("GET", relative_url).url == expected
+
+
+@pytest.mark.parametrize("client_cls", [httpx.Client, httpx.AsyncClient])
+def test_merge_relative_url_with_escaped_base_path_and_query(client_cls):
+    client = client_cls(base_url="https://www.example.com/base%2Fpath?token=abc")
+    assert client.base_url == "https://www.example.com/base%2Fpath/?token=abc"
+    request = client.build_request("GET", "next")
+    assert request.url == "https://www.example.com/base%2Fpath/next?token=abc"
+
+
+@pytest.mark.parametrize("client_cls", [httpx.Client, httpx.AsyncClient])
+def test_merge_relative_url_with_base_path_already_slash_and_query(client_cls):
+    client = client_cls(base_url="https://www.example.com/api/?token=abc")
+    assert client.base_url == "https://www.example.com/api/?token=abc"
+    assert (
+        client.build_request("GET", "next").url
+        == "https://www.example.com/api/next?token=abc"
+    )
+
+
 def test_merge_relative_url_with_path():
     client = httpx.Client(base_url="https://www.example.com/some/path")
     request = client.build_request("GET", "/testing/123")
