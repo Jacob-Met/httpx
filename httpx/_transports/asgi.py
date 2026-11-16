@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import typing
 
+import anyio
+
 from .._models import Request, Response
 from .._types import AsyncByteStream
 from .base import AsyncBaseTransport
@@ -53,11 +55,47 @@ def create_event() -> Event:
 
 
 class ASGIResponseStream(AsyncByteStream):
-    def __init__(self, body: list[bytes]) -> None:
-        self._body = body
+    def __init__(
+        self,
+        receive_stream: anyio.abc.ObjectReceiveStream[bytes],
+        response_complete: Event,
+        app_done: Event,
+        cancel_app: typing.Callable[[], None],
+        app_error: typing.Callable[[], Exception | None],
+        on_close: typing.Callable[[ASGIResponseStream], None],
+    ) -> None:
+        self._receive_stream = receive_stream
+        self._response_complete = response_complete
+        self._app_done = app_done
+        self._cancel_app = cancel_app
+        self._app_error = app_error
+        self._on_close = on_close
+        self._exhausted = False
+        self._closed = False
 
     async def __aiter__(self) -> typing.AsyncIterator[bytes]:
-        yield b"".join(self._body)
+        async with self._receive_stream:
+            async for chunk in self._receive_stream:
+                yield chunk
+        self._exhausted = True
+        await self._app_done.wait()
+        if error := self._app_error():
+            raise error
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._response_complete.set()
+        if not self._exhausted:
+            self._cancel_app()
+        # Cleanup is necessary even when the enclosing response is cancelled.
+        try:
+            with anyio.CancelScope(shield=True):
+                await self._receive_stream.aclose()
+                await self._app_done.wait()
+        finally:
+            self._on_close(self)
 
 
 class ASGITransport(AsyncBaseTransport):
@@ -95,6 +133,7 @@ class ASGITransport(AsyncBaseTransport):
         self.raise_app_exceptions = raise_app_exceptions
         self.root_path = root_path
         self.client = client
+        self._active_streams: set[ASGIResponseStream] = set()
 
     async def handle_async_request(
         self,
@@ -125,9 +164,21 @@ class ASGITransport(AsyncBaseTransport):
         # Response.
         status_code = None
         response_headers = None
-        body_parts = []
         response_started = False
         response_complete = create_event()
+        response_started_event = create_event()
+        app_done = create_event()
+        app_error: Exception | None = None
+        cancel_app: list[typing.Callable[[], None]] = [lambda: None]
+        cancel_requested = False
+        send_stream: anyio.abc.ObjectSendStream[bytes]
+        receive_stream: anyio.abc.ObjectReceiveStream[bytes]
+        send_stream, receive_stream = anyio.create_memory_object_stream(1)
+
+        def cancel_runner() -> None:
+            nonlocal cancel_requested
+            cancel_requested = True
+            cancel_app[0]()
 
         # ASGI callables.
 
@@ -154,6 +205,7 @@ class ASGITransport(AsyncBaseTransport):
                 status_code = message["status"]
                 response_headers = message.get("headers", [])
                 response_started = True
+                response_started_event.set()
 
             elif message["type"] == "http.response.body":
                 assert not response_complete.is_set()
@@ -161,27 +213,90 @@ class ASGITransport(AsyncBaseTransport):
                 more_body = message.get("more_body", False)
 
                 if body and request.method != "HEAD":
-                    body_parts.append(body)
+                    await send_stream.send(body)
 
                 if not more_body:
                     response_complete.set()
 
+        async def run_app() -> None:
+            nonlocal app_error, status_code, response_headers
+            try:
+                if is_running_trio():
+                    import trio
+
+                    with trio.CancelScope() as app_cancel_scope:
+                        cancel_app[0] = app_cancel_scope.cancel
+                        if cancel_requested:
+                            app_cancel_scope.cancel()
+                        await self.app(scope, receive, send)
+                else:
+                    await self.app(scope, receive, send)
+                if not response_complete.is_set():
+                    raise AssertionError(
+                        "ASGI application did not finish response body"
+                    )
+                if status_code is None:
+                    raise AssertionError("ASGI application did not start a response")
+            except Exception as exc:
+                if self.raise_app_exceptions:
+                    app_error = exc
+                if status_code is None:
+                    status_code = 500
+                    response_headers = []
+            finally:
+                with anyio.CancelScope(shield=True):
+                    response_complete.set()
+                    response_started_event.set()
+                    await send_stream.aclose()
+                    app_done.set()
+
+        # Use a separate task so response headers and body chunks can be sent
+        # before an ASGI application returns (for example, SSE endpoints).
+        if is_running_trio():
+            import trio
+
+            trio.lowlevel.spawn_system_task(run_app)
+        else:
+            import asyncio
+
+            task = asyncio.create_task(run_app())
+            # A task cancelled before its first step never runs its finally block.
+            task.add_done_callback(lambda _: app_done.set())
+
+            def cancel_task() -> None:
+                task.cancel()
+
+            cancel_app[0] = cancel_task
+
         try:
-            await self.app(scope, receive, send)
-        except Exception:  # noqa: PIE-786
-            if self.raise_app_exceptions:
-                raise
+            await response_started_event.wait()
+        except BaseException:
+            cancel_runner()
+            with anyio.CancelScope(shield=True):
+                response_complete.set()
+                await send_stream.aclose()
+                await receive_stream.aclose()
+                await app_done.wait()
+            raise
 
-            response_complete.set()
-            if status_code is None:
-                status_code = 500
-            if response_headers is None:
-                response_headers = {}
-
-        assert response_complete.is_set()
+        if app_error is not None:
+            await receive_stream.aclose()
+            raise app_error
         assert status_code is not None
         assert response_headers is not None
 
-        stream = ASGIResponseStream(body_parts)
-
+        stream = ASGIResponseStream(
+            receive_stream,
+            response_complete,
+            app_done,
+            cancel_runner,
+            lambda: app_error,
+            self._active_streams.discard,
+        )
+        self._active_streams.add(stream)
         return Response(status_code, headers=response_headers, stream=stream)
+
+    async def aclose(self) -> None:
+        for stream in tuple(self._active_streams):
+            await stream.aclose()
+        self._active_streams.clear()

@@ -1,8 +1,121 @@
 import json
 
+import anyio
 import pytest
 
 import httpx
+
+
+@pytest.mark.anyio
+async def test_asgi_streaming_yields_before_app_completes():
+    next_chunk = anyio.Event()
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200})
+        await send(
+            {"type": "http.response.body", "body": b"first\n", "more_body": True}
+        )
+        await next_chunk.wait()
+        await send({"type": "http.response.body", "body": b"second\n"})
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with anyio.fail_after(0.5):
+            async with client.stream("GET", "http://example.org/stream") as response:
+                assert response.status_code == 200
+                chunks = []
+                async for chunk in response.aiter_bytes():
+                    chunks.append(chunk)
+                    if chunk == b"first\n":
+                        next_chunk.set()
+                assert chunks == [b"first\n", b"second\n"]
+
+
+@pytest.mark.anyio
+async def test_asgi_streaming_close_cancels_infinite_app():
+    stopped = anyio.Event()
+
+    async def app(scope, receive, send):
+        try:
+            await send({"type": "http.response.start", "status": 200})
+            await send(
+                {"type": "http.response.body", "body": b"first\n", "more_body": True}
+            )
+            await anyio.sleep_forever()
+        finally:
+            stopped.set()
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with anyio.fail_after(0.5):
+            async with client.stream("GET", "http://example.org/stream") as response:
+                assert response.status_code == 200
+            await stopped.wait()
+
+
+@pytest.mark.anyio
+async def test_asgi_streaming_preserves_backpressure():
+    sent_second = anyio.Event()
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200})
+        await send({"type": "http.response.body", "body": b"one", "more_body": True})
+        await send({"type": "http.response.body", "body": b"two", "more_body": True})
+        sent_second.set()
+        await send({"type": "http.response.body", "body": b"three"})
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
+        with anyio.fail_after(1):
+            async with client.stream("GET", "http://example.org/stream") as response:
+                await anyio.sleep(0.01)
+                assert not sent_second.is_set()
+                assert [chunk async for chunk in response.aiter_raw()] == [
+                    b"one",
+                    b"two",
+                    b"three",
+                ]
+                assert sent_second.is_set()
+
+
+@pytest.mark.anyio
+async def test_asgi_streaming_app_error_after_body():
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200})
+        await send(
+            {"type": "http.response.body", "body": b"partial", "more_body": True}
+        )
+        raise RuntimeError("midstream failure")
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
+        with pytest.raises(RuntimeError, match="midstream failure"):
+            await client.get("http://example.org/failure")
+
+
+@pytest.mark.anyio
+async def test_asgi_application_incomplete_response_is_an_error():
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200})
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
+        with pytest.raises(AssertionError, match="did not finish response body"):
+            await client.get("http://example.org/incomplete")
+
+
+@pytest.mark.anyio
+async def test_asgi_cancel_while_waiting_for_headers():
+    stopped = anyio.Event()
+
+    async def app(scope, receive, send):
+        try:
+            await anyio.sleep_forever()
+        finally:
+            stopped.set()
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
+        with anyio.move_on_after(0.03) as cancelled:
+            await client.get("http://example.org/never-starts")
+        assert cancelled.cancel_called
+        assert stopped.is_set()
 
 
 async def hello_world(scope, receive, send):
