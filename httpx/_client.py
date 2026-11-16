@@ -45,6 +45,7 @@ from ._types import (
     SyncByteStream,
     TimeoutTypes,
 )
+from ._urlparse import MAX_URL_LENGTH
 from ._urls import URL, QueryParams
 from ._utils import URLPattern, get_environment_proxies
 
@@ -407,6 +408,16 @@ class BaseClient:
             # >>> client.build_request("GET", "/path").url
             # URL('https://www.example.com/subpath/path')
             merge_raw_path = self.base_url.raw_path + merge_url.raw_path.lstrip(b"/")
+            path, has_query, query = merge_raw_path.partition(b"?")
+            # Both URLs are already normalized. Avoid reparsing every component
+            # on ordinary requests; leave dot segments and oversized URLs to
+            # the full normalization and validation path.
+            if b"/." not in path and len(merge_raw_path) <= MAX_URL_LENGTH:
+                reference = self.base_url._uri_reference._replace(
+                    path=path.decode("ascii"),
+                    query=query.decode("ascii") if has_query else None,
+                )
+                return URL._from_uri_reference(reference)
             return self.base_url.copy_with(raw_path=merge_raw_path)
         return merge_url
 

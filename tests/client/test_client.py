@@ -201,6 +201,23 @@ def test_merge_relative_url():
     assert request.url == "https://www.example.com/testing/123"
 
 
+@pytest.mark.parametrize("client_cls", [httpx.Client, httpx.AsyncClient])
+@pytest.mark.parametrize(
+    ("relative_url", "expected"),
+    [
+        ("child", "https://example.org/api/child"),
+        ("/encoded%2Fslash", "https://example.org/api/encoded%2Fslash"),
+        ("../other", "https://example.org/other"),
+        ("./child", "https://example.org/api/child"),
+        ("child?key=%2F%2B", "https://example.org/api/child?key=%2F%2B"),
+        ("child?", "https://example.org/api/child?"),
+    ],
+)
+def test_merge_normalized_relative_url(client_cls, relative_url, expected):
+    client = client_cls(base_url="https://example.org/api")
+    assert str(client.build_request("GET", relative_url).url) == expected
+
+
 def test_merge_relative_url_with_path():
     client = httpx.Client(base_url="https://www.example.com/some/path")
     request = client.build_request("GET", "/testing/123")
