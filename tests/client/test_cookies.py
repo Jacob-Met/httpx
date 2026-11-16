@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from http.cookiejar import Cookie, CookieJar
 
 import pytest
@@ -16,7 +18,9 @@ def get_and_set_cookies(request: httpx.Request) -> httpx.Response:
 
 
 @pytest.mark.parametrize("client_cls", [httpx.Client, httpx.AsyncClient])
-def test_build_request_cookie_snapshot(client_cls) -> None:
+def test_build_request_cookie_snapshot(
+    client_cls: type[httpx.Client] | type[httpx.AsyncClient],
+) -> None:
     client = client_cls(cookies={"name": "before"})
     first = client.build_request("GET", "https://example.org/echo_cookies")
     client.cookies.set("name", "after")
