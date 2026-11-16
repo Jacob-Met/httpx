@@ -228,6 +228,36 @@ def test_request_generator_content_picklable():
     assert pickle_request.content == b"test 123"
 
 
+@pytest.mark.parametrize(
+    ("url", "params", "expected"),
+    [
+        (
+            "https://example.org/search?page=post&s=list",
+            {"pid": 0, "tags": "k-on!"},
+            "https://example.org/search?page=post&s=list&pid=0&tags=k-on%21",
+        ),
+        (
+            "https://example.org/search?token=a%2Fb%20c&token=second",
+            {"limit": 5},
+            "https://example.org/search?token=a%2Fb%20c&token=second&limit=5",
+        ),
+        (
+            "https://example.org/search?key=first#fragment",
+            {"key": "second"},
+            "https://example.org/search?key=first&key=second#fragment",
+        ),
+        (
+            "https://example.org/search?first=1",
+            {"empty": []},
+            "https://example.org/search?first=1",
+        ),
+    ],
+)
+def test_request_params_merge_existing_url_query(url, params, expected):
+    request = httpx.Request("GET", url, params=params)
+    assert request.url == expected
+
+
 def test_request_params():
     request = httpx.Request("GET", "http://example.com", params={})
     assert str(request.url) == "http://example.com"
@@ -235,7 +265,7 @@ def test_request_params():
     request = httpx.Request(
         "GET", "http://example.com?c=3", params={"a": "1", "b": "2"}
     )
-    assert str(request.url) == "http://example.com?a=1&b=2"
+    assert str(request.url) == "http://example.com?c=3&a=1&b=2"
 
     request = httpx.Request("GET", "http://example.com?a=1", params={})
     assert str(request.url) == "http://example.com"

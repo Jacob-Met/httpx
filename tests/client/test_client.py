@@ -277,6 +277,16 @@ def test_merge_relative_url_with_fragments(client_cls, base, relative, expected)
     assert client.build_request("GET", relative).url == expected
 
 
+@pytest.mark.parametrize("client_cls", [httpx.Client, httpx.AsyncClient])
+def test_base_query_kept_when_client_params_present(client_cls):
+    client = client_cls(
+        base_url="https://example.org/api?key=base#stale", params={"page": "2"}
+    )
+    request = client.build_request("GET", "child#requested")
+    assert request.url == "https://example.org/api/child?key=base&page=2#requested"
+    assert request.url.raw_path == b"/api/child?key=base&page=2"
+
+
 def test_merge_relative_url_with_path():
     client = httpx.Client(base_url="https://www.example.com/some/path")
     request = client.build_request("GET", "/testing/123")
