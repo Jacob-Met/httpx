@@ -335,3 +335,36 @@ async def test_asgi_exc_no_raise():
         response = await client.get("http://www.example.org/")
 
         assert response.status_code == 500
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "method", ["aiter_raw", "aiter_bytes", "aiter_text", "aiter_lines"]
+)
+async def test_asgi_early_stream_break_does_not_leak_async_generators(method):
+    import gc
+    import warnings
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200})
+        await send(
+            {"type": "http.response.body", "body": b"first\n", "more_body": True}
+        )
+        await anyio.sleep_forever()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", ResourceWarning)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
+            async with client.stream("GET", "http://example.org/stream") as response:
+                async for chunk in getattr(response, method)():
+                    assert chunk in (b"first\n", "first\n", "first")
+                    break
+            assert response.is_closed
+            gc.collect()
+            await anyio.sleep(0)
+            gc.collect()
+            await anyio.sleep(0)
+
+    assert not [
+        str(w.message) for w in caught if issubclass(w.category, ResourceWarning)
+    ]

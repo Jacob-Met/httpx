@@ -73,14 +73,20 @@ class ASGIResponseStream(AsyncByteStream):
         self._exhausted = False
         self._closed = False
 
-    async def __aiter__(self) -> typing.AsyncIterator[bytes]:
-        async with self._receive_stream:
-            async for chunk in self._receive_stream:
-                yield chunk
-        self._exhausted = True
-        await self._app_done.wait()
-        if error := self._app_error():
-            raise error
+    def __aiter__(self) -> ASGIResponseStream:
+        return self
+
+    async def __anext__(self) -> bytes:
+        if self._closed:
+            raise StopAsyncIteration
+        try:
+            return await self._receive_stream.receive()
+        except anyio.EndOfStream:
+            self._exhausted = True
+            await self.aclose()
+            if error := self._app_error():
+                raise error
+            raise StopAsyncIteration
 
     async def aclose(self) -> None:
         if self._closed:
