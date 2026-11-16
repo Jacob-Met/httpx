@@ -46,6 +46,7 @@ from ._types import (
     ResponseExtensions,
     SyncByteStream,
 )
+from ._urlparse import MAX_URL_LENGTH
 from ._urls import URL, QueryParams
 from ._utils import to_bytes_or_str, to_str
 
@@ -399,16 +400,24 @@ class Request:
         self.method = method.upper()
         self.url = URL(url)
         if params is not None:
-            if params and self.url.query:
-                # Preserve the original encoded query while adding new values.
-                # Re-serializing it can alter signed or duplicate parameters.
-                extra_query = str(QueryParams(params)).encode("ascii")
-                if extra_query:
-                    self.url = self.url.copy_with(
-                        query=self.url.query + b"&" + extra_query
-                    )
+            # QueryParams generates an already escaped ASCII query. Reuse the
+            # normalized URL components without parsing them again.
+            extra_query = str(QueryParams(params)) if params else ""
+            original_query = self.url._uri_reference.query
+            query: str | None
+            if extra_query and original_query:
+                # Keep raw signatures and duplicate parameters exactly intact.
+                query = original_query + "&" + extra_query
+            elif params and original_query:
+                query = original_query
             else:
-                self.url = self.url.copy_with(params=params)
+                query = extra_query if params else None
+            if query != original_query:
+                if query is not None and len(query) > MAX_URL_LENGTH:
+                    self.url = self.url.copy_with(query=query.encode("ascii"))
+                else:
+                    reference = self.url._uri_reference._replace(query=query)
+                    self.url = URL._from_uri_reference(reference)
         self.headers = Headers(headers)
         self.extensions = {} if extensions is None else dict(extensions)
 

@@ -269,3 +269,26 @@ def test_request_params():
 
     request = httpx.Request("GET", "http://example.com?a=1", params={})
     assert str(request.url) == "http://example.com"
+
+
+@pytest.mark.parametrize(
+    ("url", "params", "expected"),
+    [
+        ("https://example.org?", {}, "https://example.org"),
+        ("https://example.org?a=1", {}, "https://example.org"),
+        (
+            "https://example.org?a=1#frag",
+            {"b": "2"},
+            "https://example.org?a=1&b=2#frag",
+        ),
+        (
+            "https://example.org?sig=%2F%2B",
+            {"b": "x y"},
+            "https://example.org?sig=%2F%2B&b=x+y",
+        ),
+        ("https://example.org?", {"b": "2"}, "https://example.org?b=2"),
+        ("https://example.org?a=1", None, "https://example.org?a=1"),
+    ],
+)
+def test_request_params_preserve_canonical_query(url, params, expected):
+    assert str(httpx.Request("GET", url, params=params).url) == expected
