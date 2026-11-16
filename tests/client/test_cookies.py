@@ -15,6 +15,18 @@ def get_and_set_cookies(request: httpx.Request) -> httpx.Response:
         raise NotImplementedError()  # pragma: no cover
 
 
+@pytest.mark.parametrize("client_cls", [httpx.Client, httpx.AsyncClient])
+def test_build_request_cookie_snapshot(client_cls) -> None:
+    client = client_cls(cookies={"name": "before"})
+    first = client.build_request("GET", "https://example.org/echo_cookies")
+    client.cookies.set("name", "after")
+    second = client.build_request("GET", "https://example.org/echo_cookies")
+
+    assert first.headers["cookie"] == "name=before"
+    assert second.headers["cookie"] == "name=after"
+    assert client.cookies["name"] == "after"
+
+
 def test_set_cookie() -> None:
     """
     Send a request including a cookie.
