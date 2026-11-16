@@ -423,7 +423,11 @@ class BaseClient:
                 merge_raw_path += separator + relative_query
             elif base_query:
                 merge_raw_path += b"?" + base_query
-            return self.base_url.copy_with(raw_path=merge_raw_path)
+            # Preserve an explicit trailing '#', but do not inherit the base
+            # URL's fragment when the request URL has none.
+            return self.base_url.copy_with(
+                raw_path=merge_raw_path, fragment=merge_url._uri_reference.fragment
+            )
         return merge_url
 
     def _merge_cookies(self, cookies: CookieTypes | None = None) -> CookieTypes | None:
