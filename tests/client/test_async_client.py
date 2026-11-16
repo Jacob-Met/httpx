@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import gc
 import typing
 from datetime import timedelta
 
+import anyio
 import pytest
 
 import httpx
@@ -373,3 +375,34 @@ async def test_server_extensions(server):
         response = await client.get(url)
     assert response.status_code == 200
     assert response.extensions["http_version"] == b"HTTP/1.1"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "method", ["aiter_raw", "aiter_bytes", "aiter_text", "aiter_lines"]
+)
+async def test_stream_close_closes_underlying_async_generator(method):
+    closed = anyio.Event()
+
+    class StreamingBody(httpx.AsyncByteStream):
+        async def __aiter__(self) -> typing.AsyncIterator[bytes]:
+            try:
+                yield b"first\n"
+                await anyio.sleep_forever()
+            finally:
+                closed.set()
+
+    async def handler(request):
+        return httpx.Response(200, stream=StreamingBody())
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        async with client.stream("GET", "http://example.org/") as response:
+            async for chunk in getattr(response, method)():
+                assert chunk in (b"first\n", "first\n", "first")
+                break
+
+    assert closed.is_set()
+    gc.collect()
+    await anyio.sleep(0)
+    gc.collect()
+    await anyio.sleep(0)
