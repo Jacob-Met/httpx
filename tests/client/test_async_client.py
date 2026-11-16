@@ -22,17 +22,25 @@ async def test_get(server):
 
 
 @pytest.mark.parametrize(
-    "url",
+    "url, expected_exception",
     [
-        pytest.param("invalid://example.org", id="scheme-not-http(s)"),
-        pytest.param("://example.org", id="no-scheme"),
-        pytest.param("http://", id="no-host"),
+        pytest.param(
+            "invalid://example.org",
+            (httpx.UnsupportedProtocol, httpx.LocalProtocolError),
+            id="scheme-not-http(s)",
+        ),
+        pytest.param(
+            "://example.org",
+            (httpx.UnsupportedProtocol, httpx.LocalProtocolError),
+            id="no-scheme",
+        ),
+        pytest.param("http://", httpx.InvalidURL, id="no-host"),
     ],
 )
 @pytest.mark.anyio
-async def test_get_invalid_url(server, url):
+async def test_get_invalid_url(server, url, expected_exception):
     async with httpx.AsyncClient() as client:
-        with pytest.raises((httpx.UnsupportedProtocol, httpx.LocalProtocolError)):
+        with pytest.raises(expected_exception):
             await client.get(url)
 
 

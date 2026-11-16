@@ -31,17 +31,45 @@ def test_get(server):
 
 
 @pytest.mark.parametrize(
-    "url",
+    "url, expected_exception",
     [
-        pytest.param("invalid://example.org", id="scheme-not-http(s)"),
-        pytest.param("://example.org", id="no-scheme"),
-        pytest.param("http://", id="no-host"),
+        pytest.param(
+            "invalid://example.org",
+            (httpx.UnsupportedProtocol, httpx.LocalProtocolError),
+            id="scheme-not-http(s)",
+        ),
+        pytest.param(
+            "://example.org",
+            (httpx.UnsupportedProtocol, httpx.LocalProtocolError),
+            id="no-scheme",
+        ),
+        pytest.param("http://", httpx.InvalidURL, id="no-host"),
     ],
 )
-def test_get_invalid_url(server, url):
+def test_get_invalid_url(server, url, expected_exception):
     with httpx.Client() as client:
-        with pytest.raises((httpx.UnsupportedProtocol, httpx.LocalProtocolError)):
+        with pytest.raises(expected_exception):
             client.get(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://",
+        "https:/example.com",
+        "https:///example.com",
+        "https:/path?token=do-not-log-this",
+    ],
+)
+def test_hostless_http_url_is_invalid(url):
+    with httpx.Client() as client:
+        with pytest.raises(httpx.InvalidURL) as exc_info:
+            client.build_request("GET", url)
+        assert "do-not-log-this" not in str(exc_info.value)
+    async_client = httpx.AsyncClient()
+    with pytest.raises(httpx.InvalidURL) as exc_info:
+        async_client.build_request("GET", url)
+    assert "do-not-log-this" not in str(exc_info.value)
 
 
 def test_build_request(server):
