@@ -3,6 +3,7 @@ from __future__ import annotations
 import codecs
 import datetime
 import email.message
+import functools
 import json as jsonlib
 import re
 import typing
@@ -512,6 +513,26 @@ class Request:
         self.stream = UnattachedStream()
 
 
+_AsyncItem = typing.TypeVar("_AsyncItem")
+
+
+def _track_async_iterator(
+    method: typing.Callable[..., typing.AsyncIterator[_AsyncItem]],
+) -> typing.Callable[..., typing.AsyncIterator[_AsyncItem]]:
+    @functools.wraps(method)
+    def tracked(
+        self: Response, *args: typing.Any, **kwargs: typing.Any
+    ) -> typing.AsyncIterator[_AsyncItem]:
+        iterator = typing.cast(
+            typing.AsyncGenerator[_AsyncItem, None], method(self, *args, **kwargs)
+        )
+        if not self.is_closed:
+            self._active_async_iterators.add(iterator)
+        return iterator
+
+    return tracked
+
+
 class Response:
     def __init__(
         self,
@@ -542,6 +563,9 @@ class Response:
 
         self.is_closed = False
         self.is_stream_consumed = False
+        self._active_async_iterators: set[typing.AsyncGenerator[typing.Any, None]] = (
+            set()
+        )
 
         self.default_encoding = default_encoding
 
@@ -863,7 +887,14 @@ class Response:
         return {
             name: value
             for name, value in self.__dict__.items()
-            if name not in ["extensions", "stream", "is_closed", "_decoder"]
+            if name
+            not in [
+                "extensions",
+                "stream",
+                "is_closed",
+                "_decoder",
+                "_active_async_iterators",
+            ]
         }
 
     def __setstate__(self, state: dict[str, typing.Any]) -> None:
@@ -872,6 +903,7 @@ class Response:
         self.is_closed = True
         self.extensions = {}
         self.stream = UnattachedStream()
+        self._active_async_iterators = set()
 
     def read(self) -> bytes:
         """
@@ -979,6 +1011,7 @@ class Response:
             self._content = b"".join([part async for part in self.aiter_bytes()])
         return self._content
 
+    @_track_async_iterator
     async def aiter_bytes(
         self, chunk_size: int | None = None
     ) -> typing.AsyncIterator[bytes]:
@@ -1004,6 +1037,7 @@ class Response:
                 for chunk in chunker.flush():
                     yield chunk
 
+    @_track_async_iterator
     async def aiter_text(
         self, chunk_size: int | None = None
     ) -> typing.AsyncIterator[str]:
@@ -1025,6 +1059,7 @@ class Response:
             for chunk in chunker.flush():
                 yield chunk
 
+    @_track_async_iterator
     async def aiter_lines(self) -> typing.AsyncIterator[str]:
         decoder = LineDecoder()
         with request_context(request=self._request):
@@ -1034,6 +1069,7 @@ class Response:
             for line in decoder.flush():
                 yield line
 
+    @_track_async_iterator
     async def aiter_raw(
         self, chunk_size: int | None = None
     ) -> typing.AsyncIterator[bytes]:
@@ -1072,8 +1108,17 @@ class Response:
 
         if not self.is_closed:
             self.is_closed = True
-            with request_context(request=self._request):
-                await self.stream.aclose()
+            active = tuple(self._active_async_iterators)
+            self._active_async_iterators.clear()
+            try:
+                for iterator in active:
+                    # aiter_raw() closes the response after normal exhaustion.
+                    # Do not try to re-enter generators still executing it.
+                    if not getattr(iterator, "ag_running", False):
+                        await iterator.aclose()
+            finally:
+                with request_context(request=self._request):
+                    await self.stream.aclose()
 
 
 class Cookies(typing.MutableMapping[str, str]):

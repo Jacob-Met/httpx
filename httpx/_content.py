@@ -35,8 +35,22 @@ class ByteStream(AsyncByteStream, SyncByteStream):
     def __iter__(self) -> Iterator[bytes]:
         yield self._stream
 
-    async def __aiter__(self) -> AsyncIterator[bytes]:
-        yield self._stream
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        return _ByteStreamIterator(self._stream)
+
+
+class _ByteStreamIterator:
+    def __init__(self, content: bytes) -> None:
+        self._content: bytes | None = content
+
+    def __aiter__(self) -> _ByteStreamIterator:
+        return self
+
+    async def __anext__(self) -> bytes:
+        if self._content is None:
+            raise StopAsyncIteration
+        content, self._content = self._content, None
+        return content
 
 
 class IteratorByteStream(SyncByteStream):

@@ -171,15 +171,22 @@ class BoundAsyncStream(AsyncByteStream):
         self._stream = stream
         self._response = response
         self._start = start
+        self._iterator: typing.AsyncIterator[bytes] | None = None
 
-    async def __aiter__(self) -> typing.AsyncIterator[bytes]:
-        async for chunk in self._stream:
-            yield chunk
+    def __aiter__(self) -> typing.AsyncIterator[bytes]:
+        self._iterator = self._stream.__aiter__()
+        return self._iterator
 
     async def aclose(self) -> None:
         elapsed = time.perf_counter() - self._start
         self._response.elapsed = datetime.timedelta(seconds=elapsed)
-        await self._stream.aclose()
+        try:
+            if self._iterator is not None:
+                close = getattr(self._iterator, "aclose", None)
+                if close is not None:
+                    await close()
+        finally:
+            await self._stream.aclose()
 
 
 EventHook = typing.Callable[..., typing.Any]
