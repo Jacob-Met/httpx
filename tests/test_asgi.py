@@ -1,4 +1,5 @@
 import json
+from typing import AsyncIterator
 
 import anyio
 import pytest
@@ -376,7 +377,7 @@ async def test_asgi_early_response_closes_streamed_request_body(outcome):
     closed = anyio.Event()
     body_read = anyio.Event()
 
-    async def upload():
+    async def upload() -> AsyncIterator[bytes]:
         try:
             yield b"first"
             await anyio.sleep_forever()

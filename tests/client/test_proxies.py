@@ -100,22 +100,20 @@ def test_transport_for_request(url, proxies, expected):
 
 
 @pytest.mark.anyio
-@pytest.mark.network
-async def test_async_proxy_close():
+async def test_async_proxy_close(server):
     try:
         transport = httpx.AsyncHTTPTransport(proxy=PROXY_URL)
         client = httpx.AsyncClient(mounts={"https://": transport})
-        await client.get("http://example.com")
+        await client.get(server.url)
     finally:
         await client.aclose()
 
 
-@pytest.mark.network
-def test_sync_proxy_close():
+def test_sync_proxy_close(server):
     try:
         transport = httpx.HTTPTransport(proxy=PROXY_URL)
         client = httpx.Client(mounts={"https://": transport})
-        client.get("http://example.com")
+        client.get(server.url)
     finally:
         client.close()
 
