@@ -368,3 +368,50 @@ async def test_asgi_early_stream_break_does_not_leak_async_generators(method):
     assert not [
         str(w.message) for w in caught if issubclass(w.category, ResourceWarning)
     ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("outcome", ["response", "error", "cancellation"])
+async def test_asgi_early_response_closes_streamed_request_body(outcome):
+    closed = anyio.Event()
+    body_read = anyio.Event()
+
+    async def upload():
+        try:
+            yield b"first"
+            await anyio.sleep_forever()
+        finally:
+            # This checkpoint must survive cancellation of the ASGI app.
+            await anyio.sleep(0)
+            closed.set()
+
+    async def app(scope, receive, send):
+        body = await receive()
+        assert body["body"] == b"first"
+        assert body["more_body"]
+        body_read.set()
+        if outcome == "error":
+            raise ValueError("upload rejected")
+        if outcome == "cancellation":
+            await anyio.sleep_forever()
+        await send({"type": "http.response.start", "status": 200})
+        await send({"type": "http.response.body", "body": b"accepted"})
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
+        if outcome == "error":
+            with pytest.raises(ValueError, match="upload rejected"):
+                await client.post("http://example.org/upload", content=upload())
+        elif outcome == "cancellation":
+
+            async def post():
+                await client.post("http://example.org/upload", content=upload())
+
+            with anyio.fail_after(1):
+                async with anyio.create_task_group() as tasks:
+                    tasks.start_soon(post)
+                    await body_read.wait()
+                    tasks.cancel_scope.cancel()
+        else:
+            response = await client.post("http://example.org/upload", content=upload())
+            assert response.text == "accepted"
+    assert closed.is_set()

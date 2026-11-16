@@ -145,7 +145,8 @@ class ASGITransport(AsyncBaseTransport):
         self,
         request: Request,
     ) -> Response:
-        assert isinstance(request.stream, AsyncByteStream)
+        request_stream = request.stream
+        assert isinstance(request_stream, AsyncByteStream)
 
         # ASGI scope.
         scope = {
@@ -164,7 +165,7 @@ class ASGITransport(AsyncBaseTransport):
         }
 
         # Request.
-        request_body_chunks = request.stream.__aiter__()
+        request_body_chunks = request_stream.__aiter__()
         request_complete = False
 
         # Response.
@@ -253,8 +254,21 @@ class ASGITransport(AsyncBaseTransport):
                 with anyio.CancelScope(shield=True):
                     response_complete.set()
                     response_started_event.set()
-                    await send_stream.aclose()
-                    app_done.set()
+                    request_close = getattr(request_body_chunks, "aclose", None)
+                    try:
+                        for close in (
+                            send_stream.aclose,
+                            request_close,
+                            request_stream.aclose,
+                        ):
+                            if close is not None:
+                                try:
+                                    await close()
+                                except Exception as exc:
+                                    if self.raise_app_exceptions and app_error is None:
+                                        app_error = exc
+                    finally:
+                        app_done.set()
 
         # Use a separate task so response headers and body chunks can be sent
         # before an ASGI application returns (for example, SSE endpoints).
@@ -287,6 +301,7 @@ class ASGITransport(AsyncBaseTransport):
 
         if app_error is not None:
             await receive_stream.aclose()
+            await app_done.wait()
             raise app_error
         assert status_code is not None
         assert response_headers is not None

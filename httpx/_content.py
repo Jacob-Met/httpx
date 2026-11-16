@@ -102,6 +102,11 @@ class AsyncIteratorByteStream(AsyncByteStream):
             async for part in self._stream:
                 yield part
 
+    async def aclose(self) -> None:
+        close = getattr(self._stream, "aclose", None)
+        if close is not None:
+            await close()
+
 
 class UnattachedStream(AsyncByteStream, SyncByteStream):
     """
