@@ -35,7 +35,7 @@ if typing.TYPE_CHECKING:
 
     import httpx  # pragma: no cover
 
-from .._config import DEFAULT_LIMITS, Limits, Proxy, create_ssl_context
+from .._config import DEFAULT_LIMITS, Limits, Proxy, create_transport_ssl_context
 from .._exceptions import (
     ConnectError,
     ConnectTimeout,
@@ -150,7 +150,9 @@ class HTTPTransport(BaseTransport):
         import httpcore
 
         proxy = Proxy(url=proxy) if isinstance(proxy, (str, URL)) else proxy
-        ssl_context = create_ssl_context(verify=verify, cert=cert, trust_env=trust_env)
+        ssl_context = create_transport_ssl_context(
+            verify=verify, cert=cert, trust_env=trust_env
+        )
 
         if proxy is None:
             self._pool = httpcore.ConnectionPool(
@@ -294,7 +296,9 @@ class AsyncHTTPTransport(AsyncBaseTransport):
         import httpcore
 
         proxy = Proxy(url=proxy) if isinstance(proxy, (str, URL)) else proxy
-        ssl_context = create_ssl_context(verify=verify, cert=cert, trust_env=trust_env)
+        ssl_context = create_transport_ssl_context(
+            verify=verify, cert=cert, trust_env=trust_env
+        )
 
         if proxy is None:
             self._pool = httpcore.AsyncConnectionPool(

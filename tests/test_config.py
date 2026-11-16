@@ -6,6 +6,7 @@ import certifi
 import pytest
 
 import httpx
+from httpx._config import _DeferredDefaultSSLContext
 
 
 def test_load_ssl_config():
@@ -84,6 +85,85 @@ def test_SSLContext_with_get_request(server, cert_pem_file):
     context.load_verify_locations(cert_pem_file)
     response = httpx.get(server.url, verify=context)
     assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "transport_cls", [httpx.HTTPTransport, httpx.AsyncHTTPTransport]
+)
+def test_transport_defers_default_ssl_trust_roots(transport_cls):
+    first = transport_cls(trust_env=False)
+    second = transport_cls(trust_env=False)
+    first_context = first._pool._ssl_context
+    second_context = second._pool._ssl_context
+
+    assert isinstance(first_context, _DeferredDefaultSSLContext)
+    assert isinstance(second_context, _DeferredDefaultSSLContext)
+    assert first_context is not second_context
+    assert first_context._lazy_context is None
+    assert second_context._lazy_context is None
+
+    # The protocol choice may be set before the CA bundle is loaded.
+    first_context.set_alpn_protocols(["http/1.1"])
+    first_context.wrap_bio(
+        ssl.MemoryBIO(), ssl.MemoryBIO(), server_hostname="example.org"
+    )
+    assert first_context._lazy_context is not None
+    assert first_context._lazy_context.cert_store_stats()["x509"] > 0
+    assert second_context._lazy_context is None
+
+
+@pytest.mark.parametrize(
+    "transport_cls", [httpx.HTTPTransport, httpx.AsyncHTTPTransport]
+)
+def test_transport_respects_explicit_ssl_context(transport_cls):
+    custom = ssl.create_default_context(cafile=certifi.where())
+    transport = transport_cls(verify=custom)
+    assert transport._pool._ssl_context is custom
+
+
+@pytest.mark.parametrize(
+    "transport_cls", [httpx.HTTPTransport, httpx.AsyncHTTPTransport]
+)
+def test_transport_respects_ssl_env_configuration(
+    transport_cls, monkeypatch, cert_pem_file, tmp_path
+):
+    monkeypatch.setenv("SSL_CERT_FILE", cert_pem_file)
+    transport = transport_cls()
+    context = transport._pool._ssl_context
+    assert not hasattr(context, "_lazy_context")
+    assert context.cert_store_stats()["x509"] > 0
+
+    # trust_env=False must not inherit the environment's custom trust roots.
+    untrusted = transport_cls(trust_env=False)._pool._ssl_context
+    assert isinstance(untrusted, _DeferredDefaultSSLContext)
+    assert untrusted._lazy_context is None
+
+    monkeypatch.delenv("SSL_CERT_FILE")
+    monkeypatch.setenv("SSLKEYLOGFILE", str(tmp_path / "keys.log"))
+    keylog_context = transport_cls(trust_env=False)._pool._ssl_context
+    assert not hasattr(keylog_context, "_lazy_context")
+    assert keylog_context.keylog_filename == str(tmp_path / "keys.log")
+
+
+def test_http_only_client_does_not_load_default_ssl_roots(server):
+    with httpx.Client(trust_env=False) as client:
+        assert isinstance(client._transport, httpx.HTTPTransport)
+        context = client._transport._pool._ssl_context
+        assert isinstance(context, _DeferredDefaultSSLContext)
+        assert context._lazy_context is None
+        assert client.get(server.url).status_code == 200
+        assert context._lazy_context is None
+
+
+@pytest.mark.anyio
+async def test_http_only_async_client_does_not_load_default_ssl_roots(server):
+    async with httpx.AsyncClient(trust_env=False) as client:
+        assert isinstance(client._transport, httpx.AsyncHTTPTransport)
+        context = client._transport._pool._ssl_context
+        assert isinstance(context, _DeferredDefaultSSLContext)
+        assert context._lazy_context is None
+        assert (await client.get(server.url)).status_code == 200
+        assert context._lazy_context is None
 
 
 def test_limits_repr():

@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import os
+import ssl
+import threading
 import typing
 
 from ._models import Headers
 from ._types import CertTypes, HeaderTypes, TimeoutTypes
 from ._urls import URL
-
-if typing.TYPE_CHECKING:
-    import ssl  # pragma: no cover
 
 __all__ = ["Limits", "Proxy", "Timeout", "create_ssl_context"]
 
@@ -20,12 +19,65 @@ class UnsetType:
 UNSET = UnsetType()
 
 
+class _DeferredDefaultSSLContext(ssl.SSLContext):
+    """Keep each transport's trusted TLS state private, loading roots on first use."""
+
+    def __new__(cls) -> _DeferredDefaultSSLContext:
+        return super().__new__(cls, ssl.PROTOCOL_TLS_CLIENT)
+
+    def __init__(self) -> None:
+        self._lazy_lock = threading.Lock()
+        self._lazy_context: ssl.SSLContext | None = None
+        self._lazy_alpn: tuple[str, ...] | None = None
+
+    def _get_context(self) -> ssl.SSLContext:
+        with self._lazy_lock:
+            if self._lazy_context is None:
+                import certifi
+
+                context = ssl.create_default_context(cafile=certifi.where())
+                if self._lazy_alpn is not None:
+                    context.set_alpn_protocols(self._lazy_alpn)
+                self._lazy_context = context
+            return self._lazy_context
+
+    def set_alpn_protocols(self, protocols: typing.Iterable[str]) -> None:
+        with self._lazy_lock:
+            self._lazy_alpn = tuple(protocols)
+            if self._lazy_context is not None:
+                self._lazy_context.set_alpn_protocols(self._lazy_alpn)
+
+    def wrap_socket(self, *args: typing.Any, **kwargs: typing.Any) -> ssl.SSLSocket:
+        return self._get_context().wrap_socket(*args, **kwargs)
+
+    def wrap_bio(self, *args: typing.Any, **kwargs: typing.Any) -> ssl.SSLObject:
+        return self._get_context().wrap_bio(*args, **kwargs)
+
+
+def create_transport_ssl_context(
+    verify: ssl.SSLContext | str | bool = True,
+    cert: CertTypes | None = None,
+    trust_env: bool = True,
+) -> ssl.SSLContext:
+    """Avoid expensive CA parsing when a default transport never uses TLS."""
+    external_roots = trust_env and (
+        os.environ.get("SSL_CERT_FILE") or os.environ.get("SSL_CERT_DIR")
+    )
+    if (
+        verify is True
+        and cert is None
+        and not external_roots
+        and not os.environ.get("SSLKEYLOGFILE")
+    ):
+        return _DeferredDefaultSSLContext()
+    return create_ssl_context(verify=verify, cert=cert, trust_env=trust_env)
+
+
 def create_ssl_context(
     verify: ssl.SSLContext | str | bool = True,
     cert: CertTypes | None = None,
     trust_env: bool = True,
 ) -> ssl.SSLContext:
-    import ssl
     import warnings
 
     import certifi
