@@ -45,6 +45,7 @@ from ._types import (
     SyncByteStream,
     TimeoutTypes,
 )
+from ._urlparse import MAX_URL_LENGTH
 from ._urls import URL, QueryParams
 from ._utils import URLPattern, get_environment_proxies
 
@@ -423,8 +424,18 @@ class BaseClient:
                 merge_raw_path += separator + relative_query
             elif base_query:
                 merge_raw_path += b"?" + base_query
-            # Preserve an explicit trailing '#', but do not inherit the base
-            # URL's fragment when the request URL has none.
+            # Both URLs have already been parsed and escaped. For ordinary
+            # paths, reuse those normalized components instead of parsing the
+            # base URL a second time on every request. Dot segments and
+            # oversized paths still need the full normalization/validation.
+            path, has_query, query = merge_raw_path.partition(b"?")
+            if b"/." not in path and len(merge_raw_path) <= MAX_URL_LENGTH:
+                reference = self.base_url._uri_reference._replace(
+                    path=path.decode("ascii"),
+                    query=query.decode("ascii") if has_query else None,
+                    fragment=merge_url._uri_reference.fragment,
+                )
+                return URL._from_uri_reference(reference)
             return self.base_url.copy_with(
                 raw_path=merge_raw_path, fragment=merge_url._uri_reference.fragment
             )

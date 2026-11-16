@@ -287,6 +287,45 @@ def test_base_query_kept_when_client_params_present(client_cls):
     assert request.url.raw_path == b"/api/child?key=base&page=2"
 
 
+@pytest.mark.parametrize("client_cls", [httpx.Client, httpx.AsyncClient])
+@pytest.mark.parametrize(
+    ("base", "relative", "expected"),
+    [
+        (
+            "https://example.org/api?key=base#old",
+            "child?key=new#",
+            "https://example.org/api/child?key=new#",
+        ),
+        (
+            "https://example.org/api?key=base#old",
+            "/child%2Fsub",
+            "https://example.org/api/child%2Fsub?key=base",
+        ),
+        (
+            "https://example.org/api?key=base",
+            "../other",
+            "https://example.org/other?key=base",
+        ),
+        (
+            "https://example.org/api?key=base",
+            "/./child",
+            "https://example.org/api/child?key=base",
+        ),
+        ("https://example.org/api", "child?", "https://example.org/api/child?"),
+        (
+            "https://example.org/api",
+            "child#part%20one",
+            "https://example.org/api/child#part%20one",
+        ),
+    ],
+)
+def test_normalized_relative_urls_merge_without_changing_url_semantics(
+    client_cls, base, relative, expected
+):
+    client = client_cls(base_url=base)
+    assert str(client.build_request("GET", relative).url) == expected
+
+
 def test_merge_relative_url_with_path():
     client = httpx.Client(base_url="https://www.example.com/some/path")
     request = client.build_request("GET", "/testing/123")

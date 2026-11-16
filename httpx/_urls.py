@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, unquote, urlencode
 import idna
 
 from ._types import QueryParamTypes
-from ._urlparse import urlparse
+from ._urlparse import ParseResult, urlparse
 from ._utils import primitive_value_to_str
 
 __all__ = ["URL", "QueryParams"]
@@ -122,6 +122,13 @@ class URL:
                 "Invalid type for url.  Expected str or httpx.URL,"
                 f" got {type(url)}: {url!r}"
             )
+
+    @classmethod
+    def _from_uri_reference(cls, reference: ParseResult) -> URL:
+        """Wrap previously normalized components without parsing them again."""
+        url = cls.__new__(cls)
+        url._uri_reference = reference
+        return url
 
     @property
     def scheme(self) -> str:
