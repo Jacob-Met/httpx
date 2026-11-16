@@ -236,6 +236,47 @@ def test_merge_relative_url_with_base_path_already_slash_and_query(client_cls):
     )
 
 
+@pytest.mark.parametrize("client_cls", [httpx.Client, httpx.AsyncClient])
+@pytest.mark.parametrize(
+    ("base", "relative", "expected"),
+    [
+        (
+            "https://example.org/api?token=base#old",
+            "child?token=new#requested",
+            "https://example.org/api/child?token=new#requested",
+        ),
+        (
+            "https://example.org/api?token=base#old",
+            "child",
+            "https://example.org/api/child?token=base",
+        ),
+        (
+            "https://example.org/api#old",
+            "?page=2#requested",
+            "https://example.org/api/?page=2#requested",
+        ),
+        (
+            "https://example.org/api#old",
+            "#requested",
+            "https://example.org/api/#requested",
+        ),
+        (
+            "https://example.org/api",
+            "child#requested",
+            "https://example.org/api/child#requested",
+        ),
+        (
+            "https://example.org/api#old",
+            "child#",
+            "https://example.org/api/child#",
+        ),
+    ],
+)
+def test_merge_relative_url_with_fragments(client_cls, base, relative, expected):
+    client = client_cls(base_url=base)
+    assert client.build_request("GET", relative).url == expected
+
+
 def test_merge_relative_url_with_path():
     client = httpx.Client(base_url="https://www.example.com/some/path")
     request = client.build_request("GET", "/testing/123")
